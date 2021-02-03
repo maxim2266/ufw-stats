@@ -54,10 +54,14 @@ from json import load as read_json, JSONDecodeError
 from ipaddress import ip_address, ip_interface, summarize_address_range as ip_range
 from socket import gethostbyaddr
 from copy import copy
+from itertools import compress as choose
 
 # little helpers
-fmt_os_error = lambda err: str(err).lstrip('<').rstrip('>')
 failed = lambda info: 'ERROR' in info
+
+def update_dict(d, key, val):
+	if val:
+		d[key] = val
 
 # constructor for ip address info function
 def ip_info_fetcher(url_prefix = 'https://rdap.arin.net/registry/ip/'):
@@ -73,7 +77,7 @@ def ip_info_fetcher(url_prefix = 'https://rdap.arin.net/registry/ip/'):
 		except JSONDecodeError as err:
 			return { 'ERROR': f'invalid JSON response: {err.msg}' }
 		except OSError as err:
-			return { 'ERROR': fmt_os_error(err)  }
+			return { 'ERROR': str(err).lstrip('<').rstrip('>')  }
 
 		try:
 			res = {
@@ -96,45 +100,29 @@ def ip_info_fetcher(url_prefix = 'https://rdap.arin.net/registry/ip/'):
 		except (KeyError, IndexError):
 			pass
 
-		try:
-			res['HOST'] = gethostbyaddr(addr)[0]
-		except OSError as err:
-			if err.errno != 1:
-				return { 'ERROR': f'cannot get host name: {fmt_os_error(err)}'  }
-
 		return res
-
-	# ip address info cache
-	ip_cache = {}	# { str(ip) -> info }
 
 	# list of networks
 	ip_nets = []	# of (IPNetwork, info)
 
-	def get(addr):
+	def get(addr, info):
 		a = addr.compressed
 
-		try:
-			return ip_cache[a]
-		except KeyError:
-			pass
-
-		for n, info in ip_nets:
+		for n, data in ip_nets:
 			if addr in n:
-				ip_cache[a] = info
-				return info
+				info.update(data)
+				return
 
-		info = ask_who_is(a)
+		data = ask_who_is(a)
 
-		if failed(info):
-			info['ERROR'] = f'query for {a} failed: {info["ERROR"]}'
+		if failed(data):
+			data = { 'ERROR': f'query for {a} failed: {data["ERROR"]}' }
 		else:
-			nets = info['NET']
-			ip_nets.extend(( (n, info) for n in nets ))
-			info.update(SCOPE = 'global', IP = a, NET = ','.join(map(str, nets)))
+			nets = data['NET']
+			ip_nets.extend(( (n, data) for n in nets ))
+			data['NET'] = ','.join(map(str, nets))
 
-		ip_cache[a] = info
-
-		return copy(info)	# copy, as we are going to modify it
+		info.update(data)
 
 	# return from ip_info_fetcher()
 	return get
@@ -164,7 +152,7 @@ def local_ip_net():
 
 	ints = dict(( pair(i) for i in s if i.get('addr_info') ))
 
-	def get(itf, addr):
+	def get(addr, itf):
 		try:
 			for n in ints[itf]:
 				if addr in n:
@@ -176,67 +164,67 @@ def local_ip_net():
 
 get_local_ip_net = local_ip_net()
 
+# ip address scope
+def ip_scope(addr):
+	s = frozenset(choose(
+		('multicast', 'private', 'global', 'unspecified', 'reserved', 'loopback', 'link_local'),
+		(addr.is_multicast, addr.is_private, addr.is_global, addr.is_unspecified, addr.is_reserved, addr.is_loopback, addr.is_link_local)
+	))
+
+	return s if s else frozenset(('unknown',))
+
 # ip address analyser
-def get_addr_info(addr):
-	a = addr.compressed
+def get_addr_info(addr, itf):
+	scope = ip_scope(addr)
+	info = { 'IP': addr.compressed, 'SCOPE': ','.join(scope) }
 
-	def new_info(scope, host = None):
-		info = { 'SCOPE': scope, 'IP': a }
-
-		if host:
-			info['HOST'] = host
-
-		return info
-
-	if addr.is_multicast:
-		return new_info('multicast')
-	if addr.is_private:
+	# host name
+	if 'private' in scope or ('global' in scope and 'multicast' not in scope):
 		try:
-			return new_info('private', gethostbyaddr(a)[0])
+			info['HOST'] = gethostbyaddr(addr.compressed)[0]
 		except OSError as err:
-			return new_info('private') if err.errno == 1 \
-				else { 'ERROR': f'host name query for {a} failed: {fmt_os_error(err)}' }
-	if addr.is_unspecified:
-		return new_info('unspecified')
-	if addr.is_reserved:
-		return new_info('reserved')
-	if addr.is_loopback:
-		return new_info('loopback')
-	if addr.is_link_local:
-		return new_info('link_local')
-	if addr.is_global:
-		return whois(addr)
+			if err.errno != 1:
+				info['ERROR'] = f'error: host name query for {addr.compressed} failed: {err}'
+				return info
 
-	return new_info('unknown')
+	# other info
+	if itf:
+		update_dict(info, 'NET', get_local_ip_net(addr, itf))
+	elif 'global' in scope:
+		whois(addr, info)
+
+	return info
+
 
 # construct iterator over journalctl output
 def ufw_action_iterator(file_name = None):
+	# address cache: { interface -> { addr.compressed -> info } }
+	# because a computer can have several network interfaces with the same ip address,
+	# see: https://serverfault.com/questions/705919/the-same-ip-on-multiple-interfaces
+	addr_cache = {}
+
+	# address info composer
 	def addr_info(rec, ip_key, port_key, itf_key):
 		try:
-			addr = ip_address(rec[ip_key])
+			addr, itf = ip_address(rec[ip_key]), rec.pop(itf_key) or ''
+		except KeyError as err:
+			exit(f'key {err} is missing from journalctl output')
+
+		try:
+			info = copy(addr_cache[itf][addr.compressed])
 		except KeyError:
-			return
+			info = get_addr_info(addr, itf)
+			addr_cache.setdefault(itf, {})[addr.compressed] = info
+			info = copy(info)
 
-		info = get_addr_info(addr)
+		try:
+			port = int(rec.pop(port_key))
+		except (KeyError, ValueError):
+			pass
+		else:
+			info['PORT'] = port
 
-		if not failed(info):
-			try:
-				info['PORT'] = int(rec[port_key])
-				del rec[port_key]
-			except KeyError:
-				pass
-			except ValueError:
-				del rec[port_key]
-
-			itf = rec.get(itf_key)
-
-			if itf:
-				info['IF'] = itf
-				net = get_local_ip_net(itf, addr)
-
-				if net:
-					info['NET'] = net
-
+		update_dict(info, 'IF', itf)
 		rec[ip_key] = info
 
 	wanted = regex(r'^(?:IN|OUT|SRC|DST|PROTO|SPT|DPT)=').match
@@ -245,13 +233,10 @@ def ufw_action_iterator(file_name = None):
 		act, ts, s = m.group(1), m.string[:m.start()], m.string[m.end():]
 		rec = dict(( x.split('=', 1) for x in s.split() if wanted(x) ))
 
-		rec.update(TS = ts, ACT = act)
+		rec.update(TS = ts, ACTION = act)
 
 		addr_info(rec, 'DST', 'DPT', 'IN')
 		addr_info(rec, 'SRC', 'SPT', 'OUT')
-
-		del rec['IN']
-		del rec['OUT']
 
 		return rec
 
@@ -277,7 +262,7 @@ def ufw_action_iterator(file_name = None):
 
 				if src.returncode != 0:
 					exit(src.returncode)
-	except Exception as err:
+	except OSError as err:
 		exit(err)
 
 # JSON output
@@ -307,8 +292,8 @@ def print_text(actions):
 
 		return prn
 
-	print_action = printer('', 'TS', 'ACT', 'PROTO')
-	print_ip = printer('  ', 'SCOPE', 'IF', 'IP', 'PORT', 'HOST', 'NET', 'DESCR', 'COUNTRY')
+	print_action = printer('', 'TS', 'ACTION', 'PROTO')
+	print_ip = printer('  ', 'SCOPE', 'IF', 'IP', 'PORT', 'HOST', 'NET', 'NAME', 'DESCR', 'COUNTRY')
 
 	for act in actions:
 		print_action(act)
@@ -317,6 +302,11 @@ def print_text(actions):
 		print('DEST:')
 		print_ip(act['DST'])
 		print()
+
+# test
+#for rec in ufw_action_iterator('test-data'):
+	#print('->', rec)
+#exit(0)
 
 # script entry point
 if len(argv) == 2 and argv[1] in ('-j', '--json'):
