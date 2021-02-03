@@ -1,16 +1,34 @@
 #!/usr/bin/env python3
 
-from sys import exit
+from sys import exit, stdin, argv
+from signal import signal, strsignal, SIGHUP, SIGINT, SIGTERM
+
+# install signal handlers
+def sig_handler(sig, _):
+	exit(f'{strsignal(sig)} [{sig}]')
+
+signal(SIGHUP, sig_handler)
+signal(SIGINT, sig_handler)
+signal(SIGTERM, sig_handler)
+
+# we don't use stdin here
+stdin.close()
+
+# main imports
 from re import compile as regex
 from subprocess import PIPE, Popen as popen
 from urllib.request import urlopen
 from ssl import create_default_context as ssl_default_context
 from json import load as read_json, JSONDecodeError
-from ipaddress import ip_address, summarize_address_range as ip_range
+from ipaddress import ip_address, ip_interface, summarize_address_range as ip_range
 from socket import gethostbyaddr
+from copy import copy
 
+# little helpers
 fmt_os_error = lambda err: str(err).lstrip('<').rstrip('>')
+failed = lambda info: 'ERROR' in info
 
+# constructor for ip address info function
 def ip_info_fetcher(url_prefix = 'https://rdap.arin.net/registry/ip/'):
 	ctx = ssl_default_context()	# SSL context
 
@@ -22,9 +40,9 @@ def ip_info_fetcher(url_prefix = 'https://rdap.arin.net/registry/ip/'):
 			with urlopen(url_prefix + addr, context = ctx, timeout = 5) as resp:
 				s = read_json(resp)
 		except JSONDecodeError as err:
-			return { 'ERROR': 'parsing JSON response: ' + err.msg }
+			return { 'ERROR': f'invalid JSON response: {err.msg}' }
 		except OSError as err:
-			return { 'ERROR': 'fetching JSON response: ' + fmt_os_error(err) }
+			return { 'ERROR': fmt_os_error(err)  }
 
 		try:
 			res = {
@@ -33,9 +51,9 @@ def ip_info_fetcher(url_prefix = 'https://rdap.arin.net/registry/ip/'):
 			}
 		except KeyError as err:
 			try:
-				return { 'ERROR': str(s['errorCode']) + ': ' + s['title'] }
+				return { 'ERROR': f'{str(s["errorCode"])}: {s["title"]}' }
 			except KeyError:
-				return { 'ERROR': f'parameter {err} is missing from JSON response' }
+				return { 'ERROR': f'parameter "{err}" is missing from JSON response' }
 
 		try:
 			res['COUNTRY'] = s['country'].upper()
@@ -51,7 +69,7 @@ def ip_info_fetcher(url_prefix = 'https://rdap.arin.net/registry/ip/'):
 			res['HOST'] = gethostbyaddr(addr)[0]
 		except OSError as err:
 			if err.errno != 1:
-				return { 'ERROR': 'getting host name: ' + fmt_os_error(err) }
+				return { 'ERROR': f'cannot get host name: {fmt_os_error(err)}'  }
 
 		return res
 
@@ -61,8 +79,8 @@ def ip_info_fetcher(url_prefix = 'https://rdap.arin.net/registry/ip/'):
 	# list of networks
 	ip_nets = []	# of (IPNetwork, info)
 
-	def who_is(addr):
-		a = str(addr)
+	def get(addr):
+		a = addr.compressed
 
 		try:
 			return ip_cache[a]
@@ -75,81 +93,118 @@ def ip_info_fetcher(url_prefix = 'https://rdap.arin.net/registry/ip/'):
 				return info
 
 		info = ask_who_is(a)
-		nets = info.get('NET')
 
-		if nets:
-			info['NET'] = ','.join((str(n) for n in nets))
-			ip_nets.extend(((n, info) for n in nets))
+		if failed(info):
+			info['ERROR'] = f'query for {a} failed: {info["ERROR"]}'
+		else:
+			nets = info['NET']
+			ip_nets.extend(( (n, info) for n in nets ))
+			info.update(SCOPE = 'global', IP = a, NET = ','.join(map(str, nets)))
 
 		ip_cache[a] = info
 
-		return info
+		return copy(info)	# copy, as we are going to modify it
 
 	# return from ip_info_fetcher()
-	return who_is
+	return get
 
-# fetcher instance
+# ip address info function
 whois = ip_info_fetcher()
 
+# local interfaces data loader
+def local_ip_net():
+	cmd = [ 'ip', '-j', '-p', 'address', 'show', 'up' ]
+
+	try:
+		with popen(cmd, stdout = PIPE, text = True) as src:
+			s = read_json(src.stdout)
+
+			src.communicate()
+
+			if src.returncode != 0:
+				exit(src.returncode)
+	except JSONDecodeError as err:
+		exit('invalid JSON in local interface data: ' + err.msg)
+	except Exception as err:
+		exit('cannot read local interface data: ' + str(err))
+
+	net = lambda x: ip_interface(f'{x["local"]}/{x["prefixlen"]}').network
+	pair = lambda x: (x['ifname'], tuple(map(net, x['addr_info'])))
+
+	ints = dict(( pair(i) for i in s if i.get('addr_info') ))
+
+	def get(itf, addr):
+		try:
+			for n in ints[itf]:
+				if addr in n:
+					return str(n)
+		except KeyError:
+			pass
+
+	return get
+
+get_local_ip_net = local_ip_net()
+
+# ip address analyser
 def get_addr_info(addr):
+	a = addr.compressed
+
+	def new_info(scope, host = None):
+		info = { 'SCOPE': scope, 'IP': a }
+
+		if host:
+			info['HOST'] = host
+
+		return info
+
 	if addr.is_multicast:
-		return { 'TYPE': 'multicast' }
+		return new_info('multicast')
 	if addr.is_private:
 		try:
-			return { 'TYPE': 'private', 'HOST': gethostbyaddr(str(addr))[0] }
+			return new_info('private', gethostbyaddr(a)[0])
 		except OSError as err:
-			return { 'TYPE': 'private' } if err.errno == 1 else { 'ERROR': fmt_os_error(err) }
+			return new_info('private') if err.errno == 1 \
+				else { 'ERROR': f'host name query for {a} failed: {fmt_os_error(err)}' }
 	if addr.is_unspecified:
-		return { 'TYPE': 'unspecified' }
+		return new_info('unspecified')
 	if addr.is_reserved:
-		return { 'TYPE': 'reserved' }
+		return new_info('reserved')
 	if addr.is_loopback:
-		return { 'TYPE': 'loopback' }
+		return new_info('loopback')
 	if addr.is_link_local:
-		return { 'TYPE': 'link_local' }
-	if not addr.is_global:
-		return { 'TYPE': 'unknown' }
+		return new_info('link_local')
+	if addr.is_global:
+		return whois(addr)
 
-	info = whois(addr)
+	return new_info('unknown')
 
-	if 'ERROR' not in info:
-		info['TYPE'] = 'global'
-
-	return info
-
-
-#for addr in ('149.154.167.92', '2a00:1450:4009:80d::200e', '149.154.167.91', '127.0.0.1'):
-	#print(addr, '->', get_addr_info(ip_address(addr)))
-
-#from sys import exit
-#exit(0)
-
-
-def records():
-	cmd = ['journalctl',
-				'--no-pager',
-				'--no-hostname',
-				'-o', 'short-iso-precise',
-				'-b',
-				'-q',
-				'-g', r'\[UFW [A-Z]+\]']
-
-	def addr_info(rec, ip_key, port_key):
+# construct iterator over journalctl output
+def ufw_action_iterator(file_name = None):
+	def addr_info(rec, ip_key, port_key, itf_key):
 		try:
 			addr = ip_address(rec[ip_key])
 		except KeyError:
 			return
 
 		info = get_addr_info(addr)
-		info['IP'] = addr
 
-		try:
-			info['PORT'] = int(rec[port_key])
-			del rec[port_key]
-		except KeyError:
-			pass
-		except ValueError:
-			del rec[port_key]
+		if not failed(info):
+			try:
+				info['PORT'] = int(rec[port_key])
+				del rec[port_key]
+			except KeyError:
+				pass
+			except ValueError:
+				del rec[port_key]
+
+			itf = rec.get(itf_key)
+
+			if itf:
+				info['IF'] = itf
+				net = get_local_ip_net(itf, addr)
+
+				if net:
+					info['NET'] = net
 
 		rec[ip_key] = info
 
@@ -159,41 +214,83 @@ def records():
 		act, ts, s = m.group(1), m.string[:m.start()], m.string[m.end():]
 		rec = dict(( x.split('=', 1) for x in s.split() if wanted(x) ))
 
-		rec.update(TS = ts, ACTION = act)
-		addr_info(rec, 'DST', 'DPT')
-		addr_info(rec, 'SRC', 'SPT')
+		rec.update(TS = ts, ACT = act)
+
+		addr_info(rec, 'DST', 'DPT', 'IN')
+		addr_info(rec, 'SRC', 'SPT', 'OUT')
+
+		del rec['IN']
+		del rec['OUT']
 
 		return rec
 
 	match_sep = regex(r'\s+kernel:\s+\[UFW\s+([A-Z]+)\]').search
 
 	try:
-		with popen(cmd, stdout = PIPE, text = True) as src:
-			yield from map(make_rec, filter(None, map(match_sep, src.stdout)))
+		if file_name:	# for debugging only
+			with open(file_name) as f:
+				yield from map(make_rec, filter(None, map(match_sep, f)))
+		else:
+			cmd = ['journalctl',
+						'--no-pager',
+						'--no-hostname',
+						'-o', 'short-iso-precise',
+						'-b',
+						'-q',
+						'-g', r'\[UFW [A-Z]+\]']
 
-			src.communicate()
+			with popen(cmd, stdout = PIPE, text = True) as src:
+				yield from map(make_rec, filter(None, map(match_sep, src.stdout)))
 
-			if src.returncode != 0:
-				exit(src.returncode)
+				src.communicate()
 
+				if src.returncode != 0:
+					exit(src.returncode)
 	except Exception as err:
 		exit(err)
 
+# JSON output
+def print_json(actions):
+	from json import JSONEncoder
 
+	encode = JSONEncoder(ensure_ascii = False).encode
 
+	print('[', encode(next(actions)))
 
-for rec in records():
-	print(rec)
+	for act in actions:
+		print(',', encode(act))
 
+	print(']')
 
+# plain text output
+def print_text(actions):
+	def printer(pad, *keys):
+		max_len = max(map(len, keys))
 
+		def prn(data):
+			if failed(data):
+				print(f'{pad}ERROR: {data["ERROR"]}')
+			else:
+				for key in keys:
+					print(f'{pad}{key}: {" " * (max_len - len(key))}{data.get(key, "n/a")}')
 
+		return prn
 
+	print_action = printer('', 'TS', 'ACT', 'PROTO')
+	print_ip = printer('  ', 'SCOPE', 'IF', 'IP', 'PORT', 'HOST', 'NET', 'DESCR', 'COUNTRY')
 
+	for act in actions:
+		print_action(act)
+		print('SRC:')
+		print_ip(act['SRC'])
+		print('DEST:')
+		print_ip(act['DST'])
+		print()
 
-	#with popen(['curl', '-sf', '--ciphers', 'DEFAULT@SECLEVEL=1', url], stdout = PIPE, text = True) as cmd:
-		#for s in cmd.stdout:
-			#print(s.strip())
-
-
-
+# script entry point
+if len(argv) == 2 and argv[1] in ('-j', '--json'):
+	print_json(ufw_action_iterator())
+elif len(argv) == 1:
+	print_text(ufw_action_iterator())
+else:
+	exit(f'Usage: {argv[0]} [-j,--json]\nDiplay ufw actions since boot.')
