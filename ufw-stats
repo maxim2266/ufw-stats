@@ -49,57 +49,92 @@ stdin.close()
 from re import compile as regex
 from subprocess import PIPE, Popen as popen
 from urllib.request import urlopen
+from urllib.error import HTTPError
 from ssl import create_default_context as ssl_default_context
+from http import HTTPStatus
 from json import load as read_json, JSONDecodeError
 from ipaddress import ip_address, ip_interface, summarize_address_range as ip_range
 from socket import gethostbyaddr
 from itertools import compress as choose
 
 # little helpers
-failed = lambda info: 'ERROR' in info
+failed = lambda d: 'ERROR' in d
 
 def set_value(d, key, val):
 	if val:
 		d[key] = val
 
-# constructor for ip address info function
-def ip_info_fetcher(url_prefix = 'https://rdap.arin.net/registry/ip/'):
-	ctx = ssl_default_context()	# SSL context
+# ARIN query constructor
+def construct_arin_query(url_prefix = 'https://rdap.arin.net/registry/ip/'):
+	# error message formatting
+	subst_prefix = regex(r'^<?urlopen error\s+').sub
+
+	def fmt_err(err):
+		return subst_prefix('', str(err)).rstrip('>')
+
+	# SSL context
+	ctx = ssl_default_context()
 
 	# prevent the "[SSL: DH_KEY_TOO_SMALL] dh key too small" error
 	ctx.set_ciphers('ALL@SECLEVEL=1')	# or 'DEFAULT@SECLEVEL=1'
 
-	def ask_who_is(addr):
+	def get(addr):
+		def error(msg):
+			return { 'ERROR': f'ARIN query for {addr} failed: {msg}' }
+
 		try:
 			with urlopen(url_prefix + addr, context = ctx, timeout = 5) as resp:
-				s = read_json(resp)
+				resp = read_json(resp)
 		except JSONDecodeError as err:
-			return { 'ERROR': f'invalid JSON response: {err.msg}' }
+			return error(f'invalid JSON response: {err.msg}')
+		except HTTPError as err:
+			return error(f'{err.code} {HTTPStatus(err.code).phrase}')
 		except OSError as err:
-			return { 'ERROR': str(err).lstrip('<').rstrip('>')  }
+			return error(fmt_err(err))
+
+		if 'errorCode' not in resp:
+			return resp
 
 		try:
-			res = {
-				'NAME': s['name'],
-				'NET': tuple(ip_range(ip_address(s['startAddress']), ip_address(s['endAddress'])))
-			}
-		except KeyError as err:
-			try:
-				return { 'ERROR': f'{str(s["errorCode"])}: {s["title"]}' }
-			except KeyError:
-				return { 'ERROR': f'parameter "{err}" is missing from JSON response' }
+			status = HTTPStatus(int(resp['errorCode']))
+		except ValueError:
+			return error(f'unexpected error code "{resp["errorCode"]}" in JSON response')
+		else:
+			return error(f'{status.value} {status.phrase}')
 
-		try:
-			res['COUNTRY'] = s['country'].upper()
-		except KeyError:
-			pass
+	return get
 
-		try:
-			res['DESCR'] = s['remarks'][0]['description'][0]
-		except (KeyError, IndexError):
-			pass
+# ARIN query instance: ask_arin(addr) -> json
+ask_arin = construct_arin_query()
 
-		return res
+# ARIN response mapper for text output
+def prep_for_text(s):
+	def error(msg):
+		return { 'ERROR': 'JSON response processing failed: ' + msg }
+
+	try:
+		res = dict(	NAME = s['name'],
+					NET = tuple(ip_range(ip_address(s['startAddress']), ip_address(s['endAddress']))) )
+	except KeyError as err:
+		return error(f'parameter "{err}" is missing')
+
+	try:
+		res.update(COUNTRY = s['country'].upper())
+	except KeyError:
+		pass
+
+	try:
+		res.update(DESCR = s['remarks'][0]['description'][0])
+	except (KeyError, IndexError):
+		pass
+
+	return res
+
+# constructor for ip address info function
+def ip_info_fetcher():
+	def ask_who_is(addr):
+		s = ask_arin(addr)
+		return s if failed(s) else prep_for_text(s)
 
 	# list of networks
 	ip_nets = []	# of (IPNetwork, info)
@@ -114,9 +149,7 @@ def ip_info_fetcher(url_prefix = 'https://rdap.arin.net/registry/ip/'):
 
 		data = ask_who_is(a)
 
-		if failed(data):
-			data = { 'ERROR': f'query for {a} failed: {data["ERROR"]}' }
-		else:
+		if not failed(data):
 			nets = data['NET']
 			ip_nets.extend(( (n, data) for n in nets ))
 			data['NET'] = ','.join(map(str, nets))
