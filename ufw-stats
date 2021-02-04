@@ -195,17 +195,17 @@ get_local_ip_net = local_ip_net()
 
 # ip address scope
 def ip_scope(addr):
-	s = frozenset(choose(
+	s = tuple(choose(
 		('multicast', 'private', 'global', 'unspecified', 'reserved', 'loopback', 'link_local'),
 		(addr.is_multicast, addr.is_private, addr.is_global, addr.is_unspecified, addr.is_reserved, addr.is_loopback, addr.is_link_local)
 	))
 
-	return s if s else frozenset(('unknown',))
+	return s if s else ('unknown',)
 
 # ip address analyser
 def get_addr_info(addr, itf):
 	scope = ip_scope(addr)
-	info = { 'IP': addr.compressed, 'SCOPE': ','.join(scope) }
+	info = { 'IP': addr.compressed, 'SCOPE': scope }
 
 	# host name
 	if ('private' in scope or 'global' in scope) and 'multicast' not in scope:
@@ -332,12 +332,16 @@ def print_text(actions):
 	print_action = printer('', 'TS', 'ACTION', 'PROTO')
 	print_ip = printer('  ', 'SCOPE', 'IF', 'IP', 'PORT', 'HOST', 'ERROR', 'NET', 'NAME', 'DESCR', 'COUNTRY')
 
+	def fix_ip(data):
+		data['SCOPE'] = ','.join(data['SCOPE'])
+		return data
+
 	for act in actions:
 		print_action(act)
 		print('SRC:')
-		print_ip(act['SRC'])
+		print_ip(fix_ip(act['SRC']))
 		print('DEST:')
-		print_ip(act['DST'])
+		print_ip(fix_ip(act['DST']))
 		print()
 
 # test
@@ -347,7 +351,7 @@ def print_text(actions):
 
 # script entry point
 if len(argv) == 2 and argv[1] in ('-j', '--json'):
-	print_json(ufw_action_iterator())
+	print_json(ufw_action_iterator('test-data-1'))
 elif len(argv) == 1:
 	print_text(ufw_action_iterator())
 else:
