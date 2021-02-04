@@ -107,47 +107,44 @@ def construct_arin_query(url_prefix = 'https://rdap.arin.net/registry/ip/'):
 # ARIN query instance: ask_arin(addr) -> json
 ask_arin = construct_arin_query()
 
-# ARIN response mapper for text output
-def prep_for_text(s):
+# ARIN response mapper
+def map_resp(s):
 	def error(msg):
-		return { 'ERROR': 'JSON response processing failed: ' + msg }
+		return { 'ERROR': 'invalid JSON response: ' + msg }
 
 	try:
-		res = dict(	NAME = s['name'],
+		res = dict(	NAME = s['name'].strip(),
 					NET = tuple(ip_range(ip_address(s['startAddress']), ip_address(s['endAddress']))) )
 	except KeyError as err:
 		return error(f'parameter "{err}" is missing')
 
 	try:
-		res.update(COUNTRY = s['country'].upper())
+		res.update(COUNTRY = s['country'].strip().upper())
 	except KeyError:
 		pass
 
 	try:
-		res.update(DESCR = s['remarks'][0]['description'][0])
+		res.update(DESCR = s['remarks'][0]['description'][0].strip())
 	except (KeyError, IndexError):
 		pass
 
 	return res
 
 # constructor for ip address info function
-def ip_info_fetcher():
-	def ask_who_is(addr):
-		s = ask_arin(addr)
-		return s if failed(s) else prep_for_text(s)
-
+def construct_whois():
 	# list of networks
 	ip_nets = []	# of (IPNetwork, info)
 
 	def get(addr, info):
-		a = addr.compressed
-
 		for n, data in ip_nets:
 			if addr in n:
 				info.update(data)
 				return
 
-		data = ask_who_is(a)
+		data = ask_arin(addr.compressed)
+
+		if not failed(data):
+			data = map_resp(data)
 
 		if not failed(data):
 			nets = data['NET']
@@ -156,11 +153,11 @@ def ip_info_fetcher():
 
 		info.update(data)
 
-	# return from ip_info_fetcher()
+	# return from construct_whois()
 	return get
 
 # ip address info function
-whois = ip_info_fetcher()
+whois = construct_whois()
 
 # local interfaces data loader
 def local_ip_net():
@@ -222,6 +219,7 @@ def get_addr_info(addr, itf):
 	# other info
 	if itf:
 		set_value(info, 'NET', get_local_ip_net(addr, itf))
+		info['IF'] = itf
 	elif 'global' in scope:
 		whois(addr, info)
 
@@ -256,7 +254,6 @@ def ufw_action_iterator(file_name = None):
 		else:
 			info['PORT'] = port
 
-		set_value(info, 'IF', itf)
 		rec[ip_key] = info
 
 	wanted = regex(r'^(?:IN|OUT|SRC|DST|PROTO|SPT|DPT)=').match
@@ -315,17 +312,25 @@ def print_text(actions):
 	def printer(pad, *keys):
 		max_len = max(map(len, keys))
 
+		try:
+			err_keys = keys[:keys.index('ERROR') + 1]
+			keys = tuple(filter(lambda k: k != 'ERROR', keys))
+		except ValueError:
+			err_keys = keys
+
+		def out(fmt, hdr):
+			print('\n'.join(map(fmt, hdr)))
+
 		def prn(data):
-			if failed(data):
-				print(f'{pad}ERROR: {data["ERROR"]}')
-			else:
-				for key in keys:
-					print(f'{pad}{key}: {" " * (max_len - len(key))}{data.get(key, "n/a")}')
+			def fmt(k):
+				return f'{pad}{k}: {" " * (max_len - len(k))}{data.get(k, "n/a")}'
+
+			out(fmt, err_keys if failed(data) else keys)
 
 		return prn
 
 	print_action = printer('', 'TS', 'ACTION', 'PROTO')
-	print_ip = printer('  ', 'SCOPE', 'IF', 'IP', 'PORT', 'HOST', 'NET', 'NAME', 'DESCR', 'COUNTRY')
+	print_ip = printer('  ', 'SCOPE', 'IF', 'IP', 'PORT', 'HOST', 'ERROR', 'NET', 'NAME', 'DESCR', 'COUNTRY')
 
 	for act in actions:
 		print_action(act)
