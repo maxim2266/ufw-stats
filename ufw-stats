@@ -31,7 +31,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 '''
 
-from sys import exit, stdin, argv
+from sys import exit, stdin, stdout, argv
 from signal import signal, strsignal, SIGHUP, SIGINT, SIGTERM
 
 # install signal handlers
@@ -347,15 +347,51 @@ def print_text(actions):
 		print_ip(fix(act['DST']))
 		print()
 
-# test
-#for rec in ufw_action_iterator('test-data'):
-	#print('->', rec)
-#exit(0)
+# usage string with optional error message
+def usage(msg = ''):
+	from os.path import basename
 
-# script entry point
-if len(argv) == 2 and argv[1] in ('-j', '--json'):
-	print_json(ufw_action_iterator())
-elif len(argv) == 1:
-	print_text(ufw_action_iterator('test-data-1'))
-else:
-	exit(f'Usage: {argv[0]} [-j,--json]\nShow ufw actions since boot, with ip address information from ARIN database.')
+	msg = f'error: {msg}\n\n' if msg else ''
+
+	exit(f'''{msg}Usage: {basename(argv[0])} [OPTION]...
+Show ufw actions since boot, with ip address information from ARIN database.
+
+Options:
+  -j, --json          produce JSON optput instead of plain text
+  -o, --output=FILE   direct output to the FILE
+  -h, --help          show this message and exit
+''')
+
+# command line parser
+from getopt import gnu_getopt, GetoptError
+
+try:
+	opts, args = gnu_getopt(argv[1:], 'jho:', ('help', 'json', 'output=', 'file='))
+except GetoptError as err:
+	usage(str(err))
+
+if args:
+	usage('unexpected command line argument: ' + args[0])
+
+run, fin, fout = print_text, None, None
+
+for opt, arg in opts:
+	if opt in ('-h', '--help'):
+		usage()
+	elif opt in ('-j', '--json'):
+		run = print_json
+	elif opt in ('-o', '--output'):
+		fout = arg
+	elif opt == '--file':	# for debugging only
+		fin = arg
+	else:
+		exit('panic: unhandled option: ' + opt)
+
+# script invocation
+from contextlib import redirect_stdout
+
+try:
+	with redirect_stdout(open(fout, 'w')) if fout else stdout:
+		run(ufw_action_iterator(fin))
+except OSError as err:
+	exit(f'error: {err}')
