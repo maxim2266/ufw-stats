@@ -306,46 +306,41 @@ def print_json(actions):
 	print(']')
 
 # plain text output
+def action_text(data):
+	return f'''\
+TS:     {data.get("TS", "n/a")}
+ACTION: {data.get("ACTION", "n/a")}
+PROTO:  {data.get("PROTO", "n/a")}'''
+
+def ip_text(info, key):
+	data = info[key]
+	data['SCOPE'] = ','.join(data['SCOPE'])
+
+	if failed(data):
+		return f'''\
+{key}:
+  SCOPE: {data.get("SCOPE", "n/a")}
+  IF:    {data.get("IF", "n/a")}
+  IP:    {data.get("IP", "n/a")}
+  PORT:  {data.get("PORT", "n/a")}
+  HOST:  {data.get("HOST", "n/a")}
+  ERROR: {data.get("ERROR")}'''
+	else:
+		return f'''\
+{key}:
+  SCOPE:   {data.get("SCOPE", "n/a")}
+  IF:      {data.get("IF", "n/a")}
+  IP:      {data.get("IP", "n/a")}
+  PORT:    {data.get("PORT", "n/a")}
+  HOST:    {data.get("HOST", "n/a")}
+  NET:     {data.get("NET", "n/a")}
+  NAME:    {data.get("NAME", "n/a")}
+  DESCR:   {data.get("DESCR", "n/a")}
+  COUNTRY: {data.get("COUNTRY", "n/a")}'''
+
 def print_text(actions):
-	# printing function constructor
-	def printer(pad, *keys):
-		max_len = max(map(len, keys))
-
-		# prepare headers such that for a failed record only values up to and including
-		# ERROR are printed, and for a successful record ERROR is skipped
-		try:
-			err_keys = keys[:keys.index('ERROR') + 1]
-		except ValueError:
-			err_keys = keys
-		else:
-			keys = err_keys[:-1] + keys[len(err_keys):]	# skip ERROR
-
-		# the printing function
-		def prn(data):
-			def fmt(k):
-				return f'{pad}{k}:{" " * (max_len - len(k))} {data.get(k, "n/a")}'
-
-			print('\n'.join(map(fmt, err_keys if failed(data) else keys)))
-
-		return prn
-
-	# printing functions
-	print_action = printer('', 'TS', 'ACTION', 'PROTO')
-	print_ip = printer('  ', 'SCOPE', 'IF', 'IP', 'PORT', 'HOST', 'ERROR', 'NET', 'NAME', 'DESCR', 'COUNTRY')
-
-	# stringify SCOPE value
-	def fix(data):
-		data['SCOPE'] = ','.join(data['SCOPE'])
-		return data
-
-	# iteration
 	for act in actions:
-		print_action(act)
-		print('SRC:')
-		print_ip(fix(act['SRC']))
-		print('DEST:')
-		print_ip(fix(act['DST']))
-		print()
+		print('\n'.join((action_text(act), ip_text(act, 'SRC'), ip_text(act, 'DST'), '')))
 
 # usage string with optional error message
 def usage(msg = ''):
@@ -353,8 +348,9 @@ def usage(msg = ''):
 
 	msg = f'error: {msg}\n\n' if msg else ''
 
-	exit(f'''{msg}Usage: {basename(argv[0])} [OPTION]...
-Show ufw actions since boot, with ip address information from ARIN database.
+	exit(f'''\
+{msg}Usage: {basename(argv[0])} [OPTION]...
+  Show ufw actions since boot, with ip address information from ARIN database.
 
 Options:
   -j, --json          produce JSON optput instead of plain text
