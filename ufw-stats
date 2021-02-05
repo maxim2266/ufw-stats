@@ -225,7 +225,6 @@ def get_addr_info(addr, itf):
 
 	return info
 
-
 # construct iterator over journalctl output
 def ufw_action_iterator(file_name = None):
 	# address cache: { interface -> { addr.compressed -> info } }
@@ -241,18 +240,17 @@ def ufw_action_iterator(file_name = None):
 			exit(f'key {err} is missing from journalctl output')
 
 		try:
-			info = dict(addr_cache[itf][addr.compressed])
+			info = addr_cache[itf][addr.compressed]
 		except KeyError:
 			info = get_addr_info(addr, itf)
 			addr_cache.setdefault(itf, {})[addr.compressed] = info
-			info = dict(info)
+
+		info = dict(info)	# make a copy
 
 		try:
-			port = int(rec.pop(port_key))
+			info['PORT'] = int(rec.pop(port_key))
 		except (KeyError, ValueError):
 			pass
-		else:
-			info['PORT'] = port
 
 		rec[ip_key] = info
 
@@ -309,39 +307,44 @@ def print_json(actions):
 
 # plain text output
 def print_text(actions):
+	# printing function constructor
 	def printer(pad, *keys):
 		max_len = max(map(len, keys))
 
+		# prepare headers such that for a failed record only values up to and including
+		# ERROR are printed, and for a successful record ERROR is skipped
 		try:
 			err_keys = keys[:keys.index('ERROR') + 1]
-			keys = tuple(filter(lambda k: k != 'ERROR', keys))
 		except ValueError:
 			err_keys = keys
+		else:
+			keys = err_keys[:-1] + keys[len(err_keys):]	# skip ERROR
 
-		def out(fmt, hdr):
-			print('\n'.join(map(fmt, hdr)))
-
+		# the printing function
 		def prn(data):
 			def fmt(k):
-				return f'{pad}{k}: {" " * (max_len - len(k))}{data.get(k, "n/a")}'
+				return f'{pad}{k}:{" " * (max_len - len(k))} {data.get(k, "n/a")}'
 
-			out(fmt, err_keys if failed(data) else keys)
+			print('\n'.join(map(fmt, err_keys if failed(data) else keys)))
 
 		return prn
 
+	# printing functions
 	print_action = printer('', 'TS', 'ACTION', 'PROTO')
 	print_ip = printer('  ', 'SCOPE', 'IF', 'IP', 'PORT', 'HOST', 'ERROR', 'NET', 'NAME', 'DESCR', 'COUNTRY')
 
-	def fix_ip(data):
+	# stringify SCOPE value
+	def fix(data):
 		data['SCOPE'] = ','.join(data['SCOPE'])
 		return data
 
+	# iteration
 	for act in actions:
 		print_action(act)
 		print('SRC:')
-		print_ip(fix_ip(act['SRC']))
+		print_ip(fix(act['SRC']))
 		print('DEST:')
-		print_ip(fix_ip(act['DST']))
+		print_ip(fix(act['DST']))
 		print()
 
 # test
@@ -351,8 +354,8 @@ def print_text(actions):
 
 # script entry point
 if len(argv) == 2 and argv[1] in ('-j', '--json'):
-	print_json(ufw_action_iterator('test-data-1'))
+	print_json(ufw_action_iterator())
 elif len(argv) == 1:
-	print_text(ufw_action_iterator())
+	print_text(ufw_action_iterator('test-data-1'))
 else:
 	exit(f'Usage: {argv[0]} [-j,--json]\nShow ufw actions since boot, with ip address information from ARIN database.')
