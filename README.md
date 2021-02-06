@@ -77,3 +77,5 @@ In JSON mode the output is a JSON array of records each equivalent to the above,
   "ACTION": "BLOCK"
 }
 ```
+
+Tested on Linux Mint 20.1 with ufw v0.36.
