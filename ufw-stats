@@ -112,6 +112,7 @@ def map_resp(s):
 	def error(msg):
 		return { 'ERROR': 'invalid JSON response: ' + msg }
 
+	# https://www.ripe.net/manage-ips-and-asns/db/registration-data-access-protocol-rdap
 	try:
 		res = dict(	NAME = s['name'].strip(),
 					NET = tuple(ip_range(ip_address(s['startAddress']), ip_address(s['endAddress']))) )
@@ -225,8 +226,8 @@ def get_addr_info(addr, itf):
 
 	return info
 
-# construct iterator over journalctl output
-def ufw_action_iterator(file_name = None):
+# construct iterator over ufw actions
+def ufw_action_iterator(src):
 	# address cache: { interface -> { addr.compressed -> info } }
 	# because a computer can have several network interfaces with the same ip address,
 	# see: https://serverfault.com/questions/705919/the-same-ip-on-multiple-interfaces
@@ -269,30 +270,38 @@ def ufw_action_iterator(file_name = None):
 
 	match_sep = regex(r'\s+kernel:\s+\[UFW\s+([A-Z]+)\]').search
 
-	try:
-		if file_name:	# for debugging only
-			with open(file_name) as f:
-				yield from map(make_rec, filter(None, map(match_sep, f)))
-		else:
-			cmd = ['journalctl',
-						'--no-pager',
-						'--no-hostname',
-						'-o', 'short-iso-precise',
-						'-b',
-						'-q',
-						'-g', r'\[UFW [A-Z]+\]']
+	return map(make_rec, filter(None, map(match_sep, src)))
 
-			with popen(cmd, stdout = PIPE, text = True) as src:
-				yield from map(make_rec, filter(None, map(match_sep, src.stdout)))
+# iterator over a file
+def file_iterator(file_name):
+	with open(file_name) as f:
+		yield from ufw_action_iterator(f)
 
-				src.communicate()
+# iterator over journalctl output
+def log_iterator(tail, num_actions):
+	cmd = ['journalctl',
+				'--no-pager',
+				'--no-hostname',
+				'-o', 'short-iso-precise',
+				'-k',
+				'-q',
+				'-g', r'\[UFW [A-Z]+\]']
 
-				if src.returncode != 0:
-					exit(src.returncode)
-	except OSError as err:
-		exit(err)
+	if num_actions >= 0:
+		cmd += ['-n', str(num_actions)]
 
-# JSON output
+	if tail:
+		cmd.append('-f')
+
+	with popen(cmd, stdout = PIPE, text = True) as src:
+		yield from ufw_action_iterator(src.stdout)
+
+		src.communicate()
+
+		if src.returncode != 0:
+			exit(src.returncode)
+
+# JSON printer
 def print_json(actions):
 	from json import JSONEncoder
 
@@ -305,10 +314,10 @@ def print_json(actions):
 
 	print(']')
 
-# plain text output
+# plain text printer
 def action_text(data):
 	return f'''\
-TS:     {data.get("TS", "n/a")}
+TS:     {data.get("TS", "n/a").replace("T", " ")}
 ACTION: {data.get("ACTION", "n/a")}
 PROTO:  {data.get("PROTO", "n/a")}'''
 
@@ -355,6 +364,8 @@ def usage(msg = ''):
 Options:
   -j, --json          produce JSON optput instead of plain text
   -o, --output=FILE   direct output to the FILE
+  -f, --follow        tail the log (continuously print new entries)
+  -n, --num-events=N  show N most recent firewall events
   -h, --help          show this message and exit
 ''')
 
@@ -362,14 +373,16 @@ Options:
 from getopt import gnu_getopt, GetoptError
 
 try:
-	opts, args = gnu_getopt(argv[1:], 'jho:', ('help', 'json', 'output=', 'file='))
+	opts, args = gnu_getopt(argv[1:], 'jho:n:f', ('help', 'json', 'output=', 'num-events=', 'follow', 'file='))
 except GetoptError as err:
 	usage(str(err))
 
 if args:
 	usage('unexpected command line argument: ' + args[0])
 
-run, fin, fout = print_text, None, None
+run, fin, fout, tail, n = print_text, None, None, False, -1
+
+valid_num = regex(r'^\d+$').match
 
 for opt, arg in opts:
 	if opt in ('-h', '--help'):
@@ -378,6 +391,13 @@ for opt, arg in opts:
 		run = print_json
 	elif opt in ('-o', '--output'):
 		fout = arg
+	elif opt in ('-n', '--num-events'):
+		if not valid_num(arg):
+			usage(f'argument for -n,--num-events must be a non-negative integer, not "{arg}"')
+
+		n = int(arg)
+	elif opt in ('-f', '--follow'):
+		tail = True
 	elif opt == '--file':	# for debugging only
 		fin = arg
 	else:
@@ -388,6 +408,6 @@ from contextlib import redirect_stdout
 
 try:
 	with redirect_stdout(open(fout, 'w')) if fout else stdout:
-		run(ufw_action_iterator(fin))
+		run(file_iterator(fin) if fin else log_iterator(tail, n))
 except OSError as err:
 	exit(f'error: {err}')
