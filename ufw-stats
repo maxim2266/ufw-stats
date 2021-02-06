@@ -107,14 +107,21 @@ def construct_whois_query(url_prefix = 'https://rdap.db.ripe.net/ip/'):
 
 # RIPE response mapper
 def map_resp(s):
+	if failed(s):
+		return s
+
 	def error(msg):
 		return { 'ERROR': 'invalid JSON response: ' + msg }
 
 	try:
-		res = dict(	NAME = s['name'].strip(),
-					NET = tuple(ip_range(ip_address(s['startAddress']), ip_address(s['endAddress']))) )
+		res = dict(NET = tuple(ip_range(ip_address(s['startAddress']), ip_address(s['endAddress']))))
 	except KeyError as err:
-		return error(f'parameter "{err}" is missing')
+		return error(f'parameter {err} is missing')
+
+	try:
+		res.update(NAME = s['name'].strip())
+	except KeyError:
+		pass
 
 	try:
 		res.update(COUNTRY = s['country'].strip().upper())
@@ -142,10 +149,7 @@ def construct_whois():
 				info.update(data)
 				return
 
-		data = ask_who_is(addr.compressed)
-
-		if not failed(data):
-			data = map_resp(data)
+		data = map_resp(ask_who_is(addr.compressed))
 
 		if not failed(data):
 			nets = data['NET']
