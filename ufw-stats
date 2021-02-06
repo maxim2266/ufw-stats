@@ -64,8 +64,9 @@ def set_value(d, key, val):
 	if val:
 		d[key] = val
 
-# ARIN query constructor
-def construct_arin_query(url_prefix = 'https://rdap.arin.net/registry/ip/'):
+# RIPE query constructor
+# see: https://www.ripe.net/manage-ips-and-asns/db/registration-data-access-protocol-rdap
+def construct_whois_query(url_prefix = 'https://rdap.db.ripe.net/ip/'):
 	# error message formatting
 	subst_prefix = regex(r'^<?urlopen error\s+').sub
 
@@ -80,7 +81,7 @@ def construct_arin_query(url_prefix = 'https://rdap.arin.net/registry/ip/'):
 
 	def get(addr):
 		def error(msg):
-			return { 'ERROR': f'ARIN query for {addr} failed: {msg}' }
+			return { 'ERROR': f'RIPE query for {addr} failed: {msg}' }
 
 		try:
 			with urlopen(url_prefix + addr, context = ctx, timeout = 5) as resp:
@@ -104,15 +105,11 @@ def construct_arin_query(url_prefix = 'https://rdap.arin.net/registry/ip/'):
 
 	return get
 
-# ARIN query instance: ask_arin(addr) -> json
-ask_arin = construct_arin_query()
-
-# ARIN response mapper
+# RIPE response mapper
 def map_resp(s):
 	def error(msg):
 		return { 'ERROR': 'invalid JSON response: ' + msg }
 
-	# https://www.ripe.net/manage-ips-and-asns/db/registration-data-access-protocol-rdap
 	try:
 		res = dict(	NAME = s['name'].strip(),
 					NET = tuple(ip_range(ip_address(s['startAddress']), ip_address(s['endAddress']))) )
@@ -136,13 +133,16 @@ def construct_whois():
 	# list of networks
 	ip_nets = []	# of (IPNetwork, info)
 
+	# RIPE query instance
+	ask_who_is = construct_whois_query()
+
 	def get(addr, info):
 		for n, data in ip_nets:
 			if addr in n:
 				info.update(data)
 				return
 
-		data = ask_arin(addr.compressed)
+		data = ask_who_is(addr.compressed)
 
 		if not failed(data):
 			data = map_resp(data)
@@ -359,13 +359,13 @@ def usage(msg = ''):
 
 	exit(f'''\
 {msg}Usage: {basename(argv[0])} [OPTION]...
-  Show ufw actions since boot, with ip address information from ARIN database.
+  Show ufw actions since boot, with ip address information from RIPE database.
 
 Options:
   -j, --json          produce JSON optput instead of plain text
   -o, --output=FILE   direct output to the FILE
   -f, --follow        tail the log (continuously print new entries)
-  -n, --num-events=N  show N most recent firewall events
+  -n, --num-actions=N show N most recent firewall actions
   -h, --help          show this message and exit
 ''')
 
@@ -373,7 +373,7 @@ Options:
 from getopt import gnu_getopt, GetoptError
 
 try:
-	opts, args = gnu_getopt(argv[1:], 'jho:n:f', ('help', 'json', 'output=', 'num-events=', 'follow', 'file='))
+	opts, args = gnu_getopt(argv[1:], 'jho:n:f', ('help', 'json', 'output=', 'num-actions=', 'follow', 'file='))
 except GetoptError as err:
 	usage(str(err))
 
@@ -391,9 +391,9 @@ for opt, arg in opts:
 		run = print_json
 	elif opt in ('-o', '--output'):
 		fout = arg
-	elif opt in ('-n', '--num-events'):
+	elif opt in ('-n', '--num-actions'):
 		if not valid_num(arg):
-			usage(f'argument for -n,--num-events must be a non-negative integer, not "{arg}"')
+			usage(f'argument for -n,--num-actions must be a non-negative integer, not "{arg}"')
 
 		n = int(arg)
 	elif opt in ('-f', '--follow'):

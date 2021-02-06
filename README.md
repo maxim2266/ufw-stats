@@ -3,19 +3,19 @@
 [![License: BSD 3 Clause](https://img.shields.io/badge/License-BSD_3--Clause-yellow.svg)](https://opensource.org/licenses/BSD-3-Clause)
 
 Show [ufw](https://wiki.archlinux.org/index.php/Uncomplicated_Firewall) actions since boot,
-with ip address information from ARIN database. Firewall actions are sourced from `journalctl`.
+with ip address information from RIPE database. Firewall actions are sourced from `journalctl`.
 
 #### Usage:
 ```
 ▶ ./ufw-stats --help
 Usage: ufw-stats [OPTION]...
-  Show ufw actions since boot, with ip address information from ARIN database.
+  Show ufw actions since boot, with ip address information from RIPE database.
 
 Options:
   -j, --json          produce JSON optput instead of plain text
   -o, --output=FILE   direct output to the FILE
   -f, --follow        tail the log (continuously print new entries)
-  -n, --num-events=N  show N most recent firewall events
+  -n, --num-actions=N show N most recent firewall actions
   -h, --help          show this message and exit
 ```
 
