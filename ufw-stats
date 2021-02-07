@@ -57,12 +57,8 @@ from ipaddress import ip_address, ip_interface, summarize_address_range as ip_ra
 from socket import gethostbyaddr
 from itertools import compress as choose
 
-# little helpers
+# little helper
 failed = lambda d: 'ERROR' in d
-
-def set_value(d, key, val):
-	if val:
-		d[key] = val
 
 # RIPE query constructor
 # see: https://www.ripe.net/manage-ips-and-asns/db/registration-data-access-protocol-rdap
@@ -223,8 +219,11 @@ def get_addr_info(addr, itf):
 
 	# other info
 	if itf:
-		set_value(info, 'NET', get_local_ip_net(addr, itf))
 		info['IF'] = itf
+		net = get_local_ip_net(addr, itf)
+
+		if net:
+			info['NET'] = net
 	elif 'global' in scope:
 		whois(addr, info)
 
@@ -386,7 +385,7 @@ if args:
 
 run, fin, fout, tail, n = print_text, None, None, False, -1
 
-valid_num = regex(r'^\d+$').match
+valid_num = regex(r'^(?:0|[1-9][0-9]*)$').match
 
 for opt, arg in opts:
 	if opt in ('-h', '--help'):
