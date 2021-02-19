@@ -19,6 +19,8 @@ Options:
   -h, --help          show this message and exit
 ```
 
+Installation: Just copy the `ufw-stats` file to a directory included in the `$PATH` environment variable.
+
 #### Output
 
 In the default text mode the program produces one record per each firewall action, for example:
@@ -48,7 +50,8 @@ DEST:
   COUNTRY: n/a
 ```
 
-In JSON mode the output is a JSON array of records each equivalent to the above, for example:
+In JSON mode the output is a JSON array of records each equivalent to the above, for example
+(pretty-printed for readability):
 ```JSON
 {
   "SRC": {
@@ -78,4 +81,4 @@ In JSON mode the output is a JSON array of records each equivalent to the above,
 }
 ```
 
-Tested on Linux Mint 20.1 with ufw v0.36.
+Tested on Linux Mint 20.1 with ufw v0.36. Requires Python 3.
