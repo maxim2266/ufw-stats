@@ -7,7 +7,7 @@ with ip address information from RIPE database. Firewall actions are sourced fro
 
 #### Usage:
 ```
-▶ ./ufw-stats --help
+▶ ufw-stats --help
 Usage: ufw-stats [OPTION]...
   Show ufw actions since boot, with ip address information from RIPE database.
 
@@ -19,7 +19,7 @@ Options:
   -h, --help          show this message and exit
 ```
 
-Installation: Just copy the `ufw-stats` file to a directory included in the `$PATH` environment variable.
+_Installation_: Just copy the `ufw-stats` file to a directory included in the `$PATH` environment variable.
 
 #### Output
 
@@ -81,4 +81,5 @@ In JSON mode the output is a JSON array of records each equivalent to the above,
 }
 ```
 
-Tested on Linux Mint 20.1 with ufw v0.36. Requires Python 3.
+#### Status
+Tested on Linux Mint 20.1 with ufw v0.36 and Python 3.8.5.
