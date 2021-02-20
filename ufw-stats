@@ -212,10 +212,8 @@ def get_addr_info(addr, itf):
 	if ('private' in scope or 'global' in scope) and 'multicast' not in scope:
 		try:
 			info['HOST'] = gethostbyaddr(addr.compressed)[0]
-		except OSError as err:
-			if err.errno != 1:
-				info['ERROR'] = f'error: host name query for {addr.compressed} failed: {err}'
-				return info
+		except OSError:
+			pass
 
 	# other info
 	if itf:
